@@ -46,6 +46,14 @@ public class Portfolio {
     );
   }
 
+  public Money getTotalPortfolioValue() {
+    return getTotalAmountShares()
+      .add(getTotalAmountBonds())
+      .add(getTotalAmountEtfs())
+      .add(getTotalAmountCurrencies())
+      .add(getTotalAmountFutures());
+  }
+
   public Money getTotalAmountShares() {
     return totalAmountShares;
   }

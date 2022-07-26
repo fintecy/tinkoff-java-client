@@ -25,6 +25,12 @@ public class Money {
     );
   }
 
+  public Money add(Money money) {
+    if (!currency.equals(money.currency))
+      throw new IllegalArgumentException(String.format("Impossible to sum different currencies: %s + %s", this.currency, money.currency));
+    return new Money(currency, value.add(money.getValue()));
+  }
+
   @Nonnull
   public String getCurrency() {
     return currency;
