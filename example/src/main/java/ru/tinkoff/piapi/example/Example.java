@@ -31,8 +31,13 @@ public class Example {
 
     var token = args[0];
     var api = InvestApi.create(token);
+    //Можно создать экземпляр sandbox - тогда все вызовы будут переадресованы в песочницу
+    var sandboxApi = InvestApi.createSandbox(token);
+    //Можно создать экземпляр readonly - тогда на уровне SDK будут заблокированы вызовы на выставление ордеров во избежании траты средств
+    var readonlyToken = InvestApi.createReadonly(token);
 
     //Примеры unary запросов
+    sandboxServiceExample(sandboxApi, instrumentFigi);
     instrumentsServiceExample(api);
     marketdataServiceExample(api);
     operationsServiceExample(api);
@@ -44,9 +49,35 @@ public class Example {
     marketdataStreamExample(api);
     ordersStreamExample(api);
     portfolioStreamExample(api);
+    positionsStreamExample(api);
+  }
+
+  private static void positionsStreamExample(InvestApi api) {
+    //Server-side stream обновлений информации по изменению позиций портфеля
+    StreamProcessor<PositionsStreamResponse> consumer = response -> {
+      if (response.hasPing()) {
+        log.info("пинг сообщение");
+      } else if (response.hasPosition()) {
+        log.info("Новые данные по позициям: {}", response);
+      }
+    };
+
+    Consumer<Throwable> onErrorCallback = error -> log.error(error.toString());
+    var accountId1 = "my_account_id1";
+    var accountId2 = "my_account_id2";
+    //Подписка стрим позиций. Не блокирующий вызов
+    //При необходимости обработки ошибок (реконнект по вине сервера или клиента), рекомендуется сделать onErrorCallback
+    api.getOperationsStreamService().subscribePositions(consumer, onErrorCallback, accountId1);
+
+    //Если обработка ошибок не требуется, то можно использовать перегруженный метод
+    api.getOperationsStreamService().subscribePositions(consumer, accountId2);
+
+    //Если требуется подписаться на обновление сразу по нескольким accountId - можно передать список
+    api.getOperationsStreamService().subscribePositions(consumer, List.of(accountId1, accountId2));
   }
 
   private static void portfolioStreamExample(InvestApi api) {
+    //Server-side stream обновлений портфеля
     StreamProcessor<PortfolioStreamResponse> consumer = response -> {
       if (response.hasPing()) {
         log.info("пинг сообщение");
@@ -170,6 +201,43 @@ public class Example {
     api.getMarketDataStreamService().getStreamById("new_stream").unsubscribeCandles(randomFigi);
   }
 
+  private static void sandboxServiceExample(InvestApi sandboxApi, String figi) {
+    //Открываем новый счет в песочнице
+    var accountId = sandboxApi.getSandboxService().openAccountSync();
+    log.info("открыт новый аккаунт в песочнице {}", accountId);
+
+    //В sandbox режиме можно делать запросы в те же методы, что и в обычном API
+    //Поэтому не придется писать отдельный код для песочницы, чтоб проверить свою стратегию
+    var accounts = sandboxApi.getUserService().getAccountsSync();
+    var mainAccount = accounts.get(0);
+    for (Account account : accounts) {
+      log.info("sandbox account id: {}, access level: {}", account.getId(), account.getAccessLevel().name());
+    }
+
+    //Убеждаемся, что мы в режиме песочницы
+    log.info("тариф должен быть sandbox. фактический тариф: {}", sandboxApi.getUserService().getInfoSync().getTariff());
+
+    //пополняем счет песочницы на 10_000 рублей и 10_000 долларов
+    sandboxApi.getSandboxService().payIn(mainAccount.getId(), MoneyValue.newBuilder().setUnits(10000).setCurrency("RUB").build());
+    sandboxApi.getSandboxService().payIn(mainAccount.getId(), MoneyValue.newBuilder().setUnits(10000).setCurrency("USD").build());
+
+    //В режиме песочницы недоступны следующие методы:
+    //UsersService.GetMarginAttributes
+    //Все методы сервиса StopOrdersService.*
+    //OperationsService.GetBrokerReport
+    //OperationsService.GetDividendsForeignIssuer
+    //OperationsService.GetWithdrawLimits
+    //OperationsService.GetOperationsByCursor
+    //OperationsStreamService.PortfolioStream
+    //OrdersStreamService.TradesStream
+
+    //Остальные методы - доступны. При вызове из sandbox режима запрос идет в песочницу, например, получим портфолио
+    getPortfolioExample(sandboxApi);
+    //Или список позиций
+    getPositionsExample(sandboxApi);
+    //Выставляем ордер
+    ordersServiceExample(sandboxApi, figi);
+  }
   private static void usersServiceExample(InvestApi api) {
     //Получаем список аккаунтов и распечатываем их с указанием привилегий токена
     var accounts = api.getUserService().getAccountsSync();
@@ -262,6 +330,7 @@ public class Example {
     getLastPricesExample(api);
     getTradingStatusExample(api);
     getLastTradesExample(api);
+    getClosePricesExample(api);
   }
 
   private static void getBrokerReportExample(InvestApi api) {
@@ -485,7 +554,66 @@ public class Example {
     }
   }
 
+  private static void getInstrumentByExample(InvestApi api) {
+    //Поиск инструмента по ticker/classcode/uid/name (в результатах поиска нет опционов)
+    var sberName = api.getInstrumentsService().findInstrumentSync("Сбербанк");
+    var sberFigi = api.getInstrumentsService().findInstrumentSync("BBG004730N88");
+    var sberUid = api.getInstrumentsService().findInstrumentSync("e6123145-9665-43e0-8413-cd61b8aa9b13");
+    var sberTicker = api.getInstrumentsService().findInstrumentSync("SBER");
+
+
+    //Синхронный поиск по figi (недоступно для опционов)
+    var sharesSyncByFigi = api.getInstrumentsService().getShareByFigiSync("BBG004730N88"); //Сбербанк
+    var currenciesSyncByFigi = api.getInstrumentsService().getCurrencyByFigiSync("BBG0013HGFT4"); //usd
+    var etfsSyncByFigi = api.getInstrumentsService().getEtfByFigiSync(("BBG000000001")); //Тинькофф Вечный портфель RUB
+    var bondsSyncByFigi = api.getInstrumentsService().getBondByFigiSync(("BBG00NHJGKN2")); //Европлан БО 05
+    var futuresSyncByFigi = api.getInstrumentsService().getFutureByFigiSync(("FUTBR0323000")); //BR-3.23 Нефть Brent
+
+    //Асинхронный поиск по figi (недоступно для опционов)
+    var sharesAsync = api.getInstrumentsService().getShareByFigi("BBG004730N88"); //Сбербанк
+    var currenciesAsync = api.getInstrumentsService().getCurrencyByFigi("BBG0013HGFT4"); //usd
+    var etfsAsync = api.getInstrumentsService().getEtfByFigi(("BBG000000001")); //Тинькофф Вечный портфель RUB
+    var bondsAsync = api.getInstrumentsService().getBondByFigi(("BBG00NHJGKN2")); //Европлан БО 05
+    var futuresAsync = api.getInstrumentsService().getFutureByFigi(("FUTBR0323000")); //BR-3.23 Нефть Brent
+
+    //Синхронный поиск по uid
+    var sharesSyncByUid = api.getInstrumentsService().getShareByUidSync("e6123145-9665-43e0-8413-cd61b8aa9b13"); //Сбербанк
+    var currenciesSyncByUid = api.getInstrumentsService().getCurrencyByUidSync("a22a1263-8e1b-4546-a1aa-416463f104d3"); //usd
+    var etfsSyncByUid = api.getInstrumentsService().getEtfByUidSync(("e2d0dbac-d354-4c36-a5ed-e5aae42ffc76")); //Тинькофф Вечный портфель RUB
+    var bondsSyncByUid = api.getInstrumentsService().getBondByUidSync(("992f7309-0921-48b0-9791-190c9725f498")); //Европлан БО 05
+    var futuresSyncByUid = api.getInstrumentsService().getFutureByUidSync(("5905f7a5-196f-4cde-9060-e80a2a425aa2")); //BR-3.23 Нефть Brent
+    var optionsSyncByUid = api.getInstrumentsService().getOptionByUidSync(("bfe09100-01c8-4b70-9ed8-61f1f5aafb4e")); //Газпром 24.08
+
+    //Асинхронный поиск по uid
+    var sharesAsyncByUid = api.getInstrumentsService().getShareByUid("e6123145-9665-43e0-8413-cd61b8aa9b13"); //Сбербанк
+    var currenciesAsyncByUid = api.getInstrumentsService().getCurrencyByUid("a22a1263-8e1b-4546-a1aa-416463f104d3"); //usd
+    var etfsAsyncByUid = api.getInstrumentsService().getEtfByUid(("e2d0dbac-d354-4c36-a5ed-e5aae42ffc76")); //Тинькофф Вечный портфель RUB
+    var bondsAsyncByUid = api.getInstrumentsService().getBondByUid(("992f7309-0921-48b0-9791-190c9725f498")); //Европлан БО 05
+    var futuresAsyncByUid = api.getInstrumentsService().getFutureByUid(("5905f7a5-196f-4cde-9060-e80a2a425aa2")); //BR-3.23 Нефть Brent
+    var optionsAsyncByUid = api.getInstrumentsService().getOptionByUid(("bfe09100-01c8-4b70-9ed8-61f1f5aafb4e")); //Газпром 24.08
+
+    //Синхронный поиск по position_uid
+    var sharesSyncByPositionUid = api.getInstrumentsService().getShareByPositionUidSync("41eb2102-5333-4713-bf15-72b204c4bf7b"); //Сбербанк
+    var currenciesSyncByPositionUid = api.getInstrumentsService().getCurrencyByPositionUidSync("6e97aa9b-50b6-4738-bce7-17313f2b2cc2"); //usd
+    var etfsSyncByPositionUid = api.getInstrumentsService().getEtfByPositionUidSync(("8005e2ec-66b3-49ae-9711-a424d9c9b61b")); //Тинькофф Вечный портфель RUB
+    var bondsSyncByPositionUid = api.getInstrumentsService().getBondByPositionUidSync(("b6aee87b-066e-4ea6-91de-cc2b94709c8f")); //Европлан БО 05
+    var futuresSyncByPositionUid = api.getInstrumentsService().getFutureByPositionUidSync(("1f9cc3c4-0958-45ec-9aa6-c9a577f2b2cc")); //BR-3.23 Нефть Brent
+    var optionsSyncByPositionUid = api.getInstrumentsService().getOptionByPositionUidSync(("1f9a310b-ddad-42e2-8b68-50937deac71f")); //Газпром 24.08
+
+    //Асинхронный поиск по position_uid
+    var sharesAsyncByPositionUid = api.getInstrumentsService().getShareByPositionUid("41eb2102-5333-4713-bf15-72b204c4bf7b"); //Сбербанк
+    var currenciesAsyncByPositionUid = api.getInstrumentsService().getCurrencyByPositionUid("6e97aa9b-50b6-4738-bce7-17313f2b2cc2"); //usd
+    var etfsAsyncByPositionUid = api.getInstrumentsService().getEtfByPositionUid(("8005e2ec-66b3-49ae-9711-a424d9c9b61b")); //Тинькофф Вечный портфель RUB
+    var bondsAsyncByPositionUid = api.getInstrumentsService().getBondByPositionUid(("b6aee87b-066e-4ea6-91de-cc2b94709c8f")); //Европлан БО 05
+    var futuresAsyncByPositionUid = api.getInstrumentsService().getFutureByPositionUid(("1f9cc3c4-0958-45ec-9aa6-c9a577f2b2cc")); //BR-3.23 Нефть Brent
+    var optionsAsyncByPositionUid = api.getInstrumentsService().getOptionByPositionUid(("1f9a310b-ddad-42e2-8b68-50937deac71f")); //Газпром 24.08
+
+  }
+
   private static void instrumentsServiceExample(InvestApi api) {
+    //Поиск инструментов по параметрам
+    getInstrumentByExample(api);
+
     //Получаем базовые списки инструментов и печатаем их
     var shares = api.getInstrumentsService().getTradableSharesSync();
     var etfs = api.getInstrumentsService().getTradableEtfsSync();
@@ -607,6 +735,19 @@ public class Example {
     var figi = randomFigi(api, 1).get(0);
     var tradingStatus = api.getMarketDataService().getTradingStatusSync(figi);
     log.info("торговый статус для инструмента {} - {}", figi, tradingStatus.getTradingStatus().name());
+  }
+
+  private static void getClosePricesExample(InvestApi api) {
+
+    //Получаем и печатаем цены закрытия торговой сессии по инструментам
+    var randomFigi = randomFigi(api, 5);
+    var closePrices = api.getMarketDataService().getClosePricesSync(randomFigi);
+    for (var closePrice : closePrices) {
+      var figi = closePrice.getFigi();
+      var price = quotationToBigDecimal(closePrice.getPrice());
+      var time = timestampToString(closePrice.getTime());
+      log.info("цены закрытия торговой сессии по инструменту {}, цена: {}, дата совершения торгов: {}", figi, price, time);
+    }
   }
 
   private static void getLastPricesExample(InvestApi api) {
